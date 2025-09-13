@@ -11,7 +11,7 @@ interface GuessResult {
 export class WordleSolverService {
   private readonly WORDLE_API = 'https://wordle.votee.dev:8000/daily';
   private readonly AI_API = 'https://api.deepseek.com/chat/completions';
-  private readonly WORD_SIZE = 6;
+  private readonly WORD_SIZE = 18;
   
   private correct: string[] = new Array(this.WORD_SIZE).fill(null);
   private present: Set<string> = new Set();
@@ -38,46 +38,91 @@ export class WordleSolverService {
   }
 
   private createAIPrompt(): string {
-    let prompt = `Wordle ${this.WORD_SIZE}-letter. Next guess must be NEW and valid.\n\n`;
+    // Phân tích trạng thái hiện tại
+    const emptySlots = this.correct.map((l, i) => l ? -1 : i).filter(i => i !== -1);
+    const movableLetters = Array.from(this.present).filter(l => !this.correct.includes(l));
     
-    // History - concise format
-    prompt += `History:\n`;
-    this.history.forEach((h, i) => {
-        prompt += `${i+1}. "${h.guess}": `;
-        prompt += h.results.map(r => {
-            if (r.result === 'correct') return `✓${r.guess}`;
-            if (r.result === 'present') return `→${r.guess}`;
-            return `✗${r.guess}`;
-        }).join(' ');
-        prompt += '\n';
-    });
-
-    // Knowledge - ultra compact
-    prompt += `\nKnown:\n`;
+    // Tạo prompt cực ngắn gọn nhưng hiệu quả
+    let prompt = `Wordle ${this.WORD_SIZE}L - Opt Guess\n`;
     
-    // Correct positions
-    this.correct.forEach((letter, index) => {
-        if (letter) prompt += `Pos${index+1}=${letter} `;
-    });
-
-    // Present letters
-    if (this.present.size > 0) {
-        prompt += `Present:${Array.from(this.present).join('')} `;
+    // Pattern hiện tại
+    prompt += `Pattern: ${this.correct.map(l => l || '_').join('')}\n`;
+    
+    // Thông tin quan trọng nhất
+    if (movableLetters.length > 0) {
+        prompt += `Move: ${movableLetters.join('')}\n`;
     }
-
-    // Absent letters
-    if (this.absent.size > 0) {
-        prompt += `Absent:${Array.from(this.absent).join('')}`;
+    if (emptySlots.length > 0) {
+        prompt += `Slots: ${emptySlots.map(s => s + 1).join(',')}\n`;
     }
-
-    // Tried words - only list, no formatting
-    prompt += `\nTried:${Array.from(this.previousGuesses).join(',')}`;
-
-    // Short instructions
-    prompt += `\n\nRules: New word, respect above, ${this.WORD_SIZE} letters, English valid.`;
-    prompt += `\nResponse: ONLY the word.`;
-
+    
+    // Danh sách từ cấm (chỉ 3 từ gần nhất)
+    const recentTried = Array.from(this.previousGuesses).slice(-3);
+    prompt += `Avoid: ${recentTried.join(',')}\n`;
+    
+    // Gợi ý cụ thể dựa trên pattern
+    prompt += `Suggest: ${this.generateSmartSuggestions()}\n`;
+    
+    prompt += `Guess:`;
+    
     return prompt;
+  }
+
+  private generateSmartSuggestions(): string {
+    const emptySlots = this.correct.map((l, i) => l ? -1 : i).filter(i => i !== -1);
+    const movableLetters = Array.from(this.present).filter(l => !this.correct.includes(l));
+    
+    const suggestions: string[] = [];
+    
+    // Gợi ý 1: Nếu ít chữ cái cần di chuyển
+    if (movableLetters.length <= 3) {
+        suggestions.push(`Rearrange ${movableLetters.join('')}`);
+    }
+    
+    // Gợi ý 2: Nếu có vị trí trống
+    if (emptySlots.length > 0) {
+        const availableLetters = 'abcdefghijklmnopqrstuvwxyz'
+            .split('')
+            .filter(c => !this.absent.has(c))
+            .slice(0, 5) // Chỉ lấy 5 chữ cái đầu
+            .join('');
+        suggestions.push(`Try letters: ${availableLetters}`);
+    }
+    
+    return suggestions.join(' | ') || 'New combination';
+  }
+
+
+  private generateEmergencyGuess(): string {
+    // Tạo từ khẩn cấp không trùng lịch sử
+    const availableLetters = 'abcdefghijklmnopqrstuvwxyz'
+        .split('')
+        .filter(c => !this.absent.has(c));
+
+    let emergencyGuess = '';
+    let attempts = 0;
+
+    while (attempts < 100) {
+        emergencyGuess = '';
+        for (let i = 0; i < this.WORD_SIZE; i++) {
+            if (this.correct[i]) {
+                emergencyGuess += this.correct[i];
+            } else {
+                const randomChar = availableLetters[
+                    Math.floor(Math.random() * availableLetters.length)
+                ];
+                emergencyGuess += randomChar;
+            }
+        }
+
+        if (!this.previousGuesses.has(emergencyGuess)) {
+            return emergencyGuess;
+        }
+        attempts++;
+    }
+
+    // Fallback cuối cùng
+    return this.correct.map(l => l || 'e').join('');
   }
 
   private checkLastCharacter(): boolean {
@@ -106,30 +151,97 @@ export class WordleSolverService {
   private async getAIGuess(): Promise<string> {
     if (this.history.length === 0) return this.getInitialGuess();
 
+    // Kiểm tra loop mạnh mẽ hơn
+    const recentGuesses = this.history.slice(-5).map(h => h.guess);
+    const uniqueRecent = new Set(recentGuesses);
+    const isInLoop = recentGuesses.length >= 3 && uniqueRecent.size <= 2;
+
+    if (isInLoop) {
+        console.log('🔄 Loop detected - Using smart emergency guess');
+        return this.generateSmartEmergencyGuess();
+    }
+
     const prompt = this.createAIPrompt();
     
-    console.log(prompt)
-    
-
     try {
-      const response = await axios.post(this.AI_API, {
-        model: 'deepseek-chat',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 5,
-        temperature: 0.1
-      }, {
-        headers: {
-          'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      });
+        const response = await axios.post(this.AI_API, {
+            model: 'deepseek-chat',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: this.WORD_SIZE + 5,
+            temperature: 0.4, // Giảm temperature để ổn định hơn
+            stop: ['\n', '.']
+        }, {
+            timeout: 5000, // Timeout ngắn hơn
+            headers: {
+                'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
 
-      const guess = response.data.choices[0].message.content.trim().toLowerCase();
-      return guess;
-      
+        let guess = response.data.choices[0].message.content.trim().toLowerCase();
+        
+        // Lọc chỉ lấy từ (loại bỏ các ký tự không cần thiết)
+        const wordMatch = guess.match(/[a-z]{7}/);
+        if (wordMatch) {
+            guess = wordMatch[0];
+        }
+        
+        // Kiểm tra trùng lặp
+        if (this.previousGuesses.has(guess)) {
+            return this.generateSmartEmergencyGuess();
+        }
+        
+        return guess;
+        
     } catch (error) {
-      return this.getFallbackGuess();
+        return this.generateSmartEmergencyGuess();
     }
+  }
+
+  private generateSmartEmergencyGuess(): string {
+    // Emergency guess thông minh hơn
+    const availableLetters = 'abcdefghijklmnopqrstuvwxyz'
+        .split('')
+        .filter(c => !this.absent.has(c));
+    
+    const priorityLetters = Array.from(this.present).filter(l => !this.correct.includes(l));
+    
+    let bestGuess = '';
+    let maxScore = -1;
+    
+    // Thử 50 tổ hợp ngẫu nhiên, chọn cái tốt nhất
+    for (let i = 0; i < 50; i++) {
+        let candidate = '';
+        let score = 0;
+        
+        for (let j = 0; j < this.WORD_SIZE; j++) {
+            if (this.correct[j]) {
+                candidate += this.correct[j];
+                score += 2; // Điểm cho vị trí đúng
+            } else {
+                // Ưu tiên chữ cái cần di chuyển
+                if (priorityLetters.length > 0 && Math.random() < 0.7) {
+                    const randomPriority = priorityLetters[
+                        Math.floor(Math.random() * priorityLetters.length)
+                    ];
+                    candidate += randomPriority;
+                    score += 1; // Điểm cho chữ cái priority
+                } else {
+                    const randomChar = availableLetters[
+                        Math.floor(Math.random() * availableLetters.length)
+                    ];
+                    candidate += randomChar;
+                }
+            }
+        }
+        
+        if (!this.previousGuesses.has(candidate) && score > maxScore) {
+            maxScore = score;
+            bestGuess = candidate;
+        }
+    }
+    
+    return bestGuess || this.getFallbackGuess();
   }
 
   private getFallbackGuess(): string {
@@ -213,29 +325,29 @@ export class WordleSolverService {
     
     // Chỉ dùng hoán vị khi có ít nhất 2 chữ cái known và tất cả đều present
     return allPresent && knownLetters.length >= 2;
-}
+  }
 
-private generatePermutations(letters: string[]): string[] {
-    const result: string[] = [];
-    
-    // Hàm đệ quy sinh hoán vị
-    const permute = (arr: string[], m: string[] = []) => {
-        if (arr.length === 0) {
-            result.push(m.join(''));
-        } else {
-            for (let i = 0; i < arr.length; i++) {
-                const curr = arr.slice();
-                const next = curr.splice(i, 1);
-                permute(curr.slice(), m.concat(next));
-            }
-        }
-    };
-    
-    permute(letters);
-    return result;
-}
+  private generatePermutations(letters: string[]): string[] {
+      const result: string[] = [];
+      
+      // Hàm đệ quy sinh hoán vị
+      const permute = (arr: string[], m: string[] = []) => {
+          if (arr.length === 0) {
+              result.push(m.join(''));
+          } else {
+              for (let i = 0; i < arr.length; i++) {
+                  const curr = arr.slice();
+                  const next = curr.splice(i, 1);
+                  permute(curr.slice(), m.concat(next));
+              }
+          }
+      };
+      
+      permute(letters);
+      return result;
+  }
 
-private async testAllPermutations(): Promise<string | null> {
+  private async testAllPermutations(): Promise<string | null> {
     const knownLetters = Array.from(this.present);
     
     // Tạo tất cả hoán vị có thể
