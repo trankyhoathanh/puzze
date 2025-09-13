@@ -11,7 +11,7 @@ interface GuessResult {
 export class WordleSolverService {
   private readonly WORDLE_API = 'https://wordle.votee.dev:8000/daily';
   private readonly AI_API = 'https://api.deepseek.com/chat/completions';
-  private readonly WORD_SIZE = 18;
+  private readonly WORD_SIZE = 12;
   
   private correct: string[] = new Array(this.WORD_SIZE).fill(null);
   private present: Set<string> = new Set();
@@ -92,39 +92,6 @@ export class WordleSolverService {
     return suggestions.join(' | ') || 'New combination';
   }
 
-
-  private generateEmergencyGuess(): string {
-    // Tạo từ khẩn cấp không trùng lịch sử
-    const availableLetters = 'abcdefghijklmnopqrstuvwxyz'
-        .split('')
-        .filter(c => !this.absent.has(c));
-
-    let emergencyGuess = '';
-    let attempts = 0;
-
-    while (attempts < 100) {
-        emergencyGuess = '';
-        for (let i = 0; i < this.WORD_SIZE; i++) {
-            if (this.correct[i]) {
-                emergencyGuess += this.correct[i];
-            } else {
-                const randomChar = availableLetters[
-                    Math.floor(Math.random() * availableLetters.length)
-                ];
-                emergencyGuess += randomChar;
-            }
-        }
-
-        if (!this.previousGuesses.has(emergencyGuess)) {
-            return emergencyGuess;
-        }
-        attempts++;
-    }
-
-    // Fallback cuối cùng
-    return this.correct.map(l => l || 'e').join('');
-  }
-
   private checkLastCharacter(): boolean {
     const lastResult = this.history[this.history.length - 1]?.results;
     if (!lastResult) return false;
@@ -162,6 +129,7 @@ export class WordleSolverService {
     }
 
     const prompt = this.createAIPrompt();
+    console.log(prompt)
     
     try {
         const response = await axios.post(this.AI_API, {
