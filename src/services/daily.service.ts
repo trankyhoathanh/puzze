@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
+import { chunk, padStart } from "lodash";
 
 interface GuessResult {
   slot: number;
@@ -11,7 +12,7 @@ interface GuessResult {
 export class WordleSolverService {
   private readonly WORDLE_API = 'https://wordle.votee.dev:8000/daily';
   private readonly AI_API = 'https://api.deepseek.com/chat/completions';
-  private readonly WORD_SIZE = 12;
+  private readonly WORD_SIZE = 18;
   
   private correct: string[] = new Array(this.WORD_SIZE).fill(null);
   private present: Set<string> = new Set();
@@ -381,5 +382,61 @@ export class WordleSolverService {
     }
     
     return `Failed after 100 attempts. Best guess: ${this.correct.join('')}`;
+  }
+
+  //Smart Brute-force
+  async solveOptimized(): Promise<string> {
+    const VOWELS = ["A", "E", "I", "O", "U"];
+    const CONSONANTS = ["B", "C", "D", "F", "G", "H", "J", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "V", "W", "X", "Y", "Z"];
+    
+    const matchedLetters = new Set<string>();
+
+    // Bước 1: Kiểm tra nguyên âm (giữ nguyên)
+    const vowelChunks = chunk(VOWELS, this.WORD_SIZE);
+    const vowelResults = await Promise.all(vowelChunks.map(async (chunk) => {
+        return await this.makeGuess(padStart(chunk.join(""), this.WORD_SIZE, "A"));
+    }));
+
+    vowelResults.forEach(result => {
+        result.forEach(feedback => {
+            if (feedback.result !== "absent") {
+                matchedLetters.add(feedback.guess);
+            }
+        });
+    });
+
+    // Bước 2: Kiểm tra phụ âm ĐỘC LẬP
+    const consonantChunks = chunk(CONSONANTS, this.WORD_SIZE);
+    const consonantResults = await Promise.all(consonantChunks.map(async (chunk) => {
+        // Tạo từ chỉ chứa phụ âm, không trộn với nguyên âm
+        const testWord = padStart(chunk.join(""), this.WORD_SIZE, "B"); // Dùng 'B' thay vì 'A'
+        return await this.makeGuess(testWord);
+    }));
+
+    consonantResults.forEach(result => {
+        result.forEach(feedback => {
+            if (feedback.result !== "absent") {
+                matchedLetters.add(feedback.guess);
+            }
+        });
+    });
+
+    // Bước 3: Tìm vị trí chính xác
+    const correctLetters: string[] = new Array(this.WORD_SIZE).fill('');
+    const positionResults = await Promise.all(
+        [...matchedLetters].map(letter => 
+            this.makeGuess(letter.repeat(this.WORD_SIZE))
+        )
+    );
+
+    positionResults.forEach(result => {
+        result.forEach(feedback => {
+            if (feedback.result === "correct") {
+                correctLetters[feedback.slot] = feedback.guess;
+            }
+        });
+    });
+
+    return correctLetters.join("");
   }
 }

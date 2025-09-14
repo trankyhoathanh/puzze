@@ -18,4 +18,9 @@ export class AppController {
   async playGameDaily() {
     return await this.wordleSolverService.solve();
   }
+
+  @Get('/smart/play/daily')
+  async playSmartGameDaily() {
+    return await this.wordleSolverService.solveOptimized();
+  }
 }
